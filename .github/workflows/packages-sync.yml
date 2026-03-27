@@ -19,15 +19,21 @@ jobs:
       - name: Setup Abuild Key
         run: |
           mkdir -p ~/.abuild
-          echo "${{ secrets.ABUILD_PRIVATE_KEY }}" > ~/.abuild/repo.rsa
+          echo "${{ secrets.ABUILD_PRIVATE_KEY }}" > ~/.abuild/effectw.rsa
           # 必须生成对应公钥以便 abuild-sign 验证
-          openssl rsa -in ~/.abuild/repo.rsa -pubout -out ~/.abuild/repo.rsa.pub
-          chmod 600 ~/.abuild/repo.rsa
+          openssl rsa -in ~/.abuild/effectw.rsa -pubout -out ~/.abuild/effectw.pub
+          chmod 600 ~/.abuild/effectw.rsa
+
+      - name: Pull Existing Packages from R2
+        run: |
+          mkdir -p /repo/x86_64
+          # 从 R2 同步现有文件到本地容器。
+          # 加上 || true 防止首次运行（Bucket为空）时报错中断
+          aws s3 sync s3://${{ secrets.R2_BUCKET }}/x86_64 /repo/x86_64 \
+            --endpoint-url ${{ secrets.R2_ENDPOINT }} || true
 
       - name: Run Fetch Script
         run: |
-          # 将上一套方案中的 Bash 脚本精简后放在这里
-          mkdir -p /repo/x86_64
           cd /repo/x86_64
           
           # 定义目标列表
@@ -41,13 +47,26 @@ jobs:
               URLS=$(curl -s "https://api.github.com/repos/$REPO_NAME/releases/latest" | jq -r ".assets[] | select(.name | test(\"$REGEX_KEYWORD\")) | .browser_download_url")
               
               for URL in $URLS; do
-                  curl -L -O "$URL"
+                  FILENAME=$(basename "$URL")
+                  # 增量判断：如果文件已存在（从 R2 拉下来的旧包包含此版本），则跳过下载
+                  if [ ! -f "$FILENAME" ]; then
+                      echo "Downloading new package: $FILENAME"
+                      curl -L -O "$URL"
+                  else
+                      echo "Package $FILENAME already exists, skipping download."
+                  fi
               done
           done
+
+          # 清理旧的索引文件（防止打包出现嵌套或冲突）
+          rm -f APKINDEX.tar.gz
           
-          # 生成并签名索引
+          # 重新生成索引（此时 *.apk 包含了 R2 里的旧包和刚才下载的新包）
+          echo "Generating new APKINDEX..."
           apk index -o APKINDEX.tar.gz *.apk
-          abuild-sign -k ~/.abuild/repo.rsa APKINDEX.tar.gz
+          
+          # 签名
+          abuild-sign -k ~/.abuild/effectw.rsa APKINDEX.tar.gz
 
       - name: Configure AWS CLI for Cloudflare R2
         run: |
@@ -57,6 +76,9 @@ jobs:
 
       - name: Sync to Cloudflare R2
         run: |
+          aws s3 cp ~/.abuild/effectw.pub s3://${{ secrets.R2_BUCKET }}/effectw.pub \
+            --endpoint-url ${{ secrets.R2_ENDPOINT }}
+
           # 使用 aws s3 sync 上传到 R2
           aws s3 sync /repo/x86_64 s3://${{ secrets.R2_BUCKET }}/x86_64 \
             --endpoint-url ${{ secrets.R2_ENDPOINT }}
