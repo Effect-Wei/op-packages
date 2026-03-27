@@ -24,17 +24,6 @@ jobs:
           openssl rsa -in ~/.abuild/effectw.rsa -pubout -out ~/.abuild/effectw.pub
           chmod 600 ~/.abuild/effectw.rsa
 
-      - name: Build OpenWrt apk-tools v3
-        run: |
-          git clone https://git.openwrt.org/project/apk-tools.git
-          cd apk-tools
-          # 编译并安装到 /usr/bin/ 目录下，覆盖默认工具
-          meson setup build --prefix=/usr
-          ninja -C build
-          ninja -C build install
-          # 验证版本，输出应该包含 3.x.x 等字样
-          /usr/bin/apk --version
-
       - name: Configure AWS CLI for Cloudflare R2
         run: |
           aws configure set aws_access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
@@ -77,14 +66,19 @@ jobs:
           done
 
           # 清理旧的索引文件（防止打包出现嵌套或冲突）
-          rm -f APKINDEX.tar.gz
+          rm -f packages.adb
           
           # 重新生成索引（此时 *.apk 包含了 R2 里的旧包和刚才下载的新包）
-          echo "Generating new APKINDEX..."
-          /usr/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
+          echo "Generating new packages.adb..."
+          apk mkndx --allow-untrusted --sign-key ~/.abuild/effectw.rsa --keys-dir ~/.abuild/ -o packages.adb *.apk
           
-          # 签名
-          abuild-sign -k ~/.abuild/effectw.rsa APKINDEX.tar.gz
+          if [ -f packages.adb ] ; then
+              echo "Index Generation and Signing Success: packages.adb generated"
+              ls -lh
+          else
+              echo "Error: Package signing failed, packages.adb not found or empty"
+              exit 1
+          fi
 
       - name: Sync to Cloudflare R2
         run: |
