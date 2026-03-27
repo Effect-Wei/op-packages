@@ -39,6 +39,7 @@ jobs:
             --endpoint-url ${{ secrets.R2_ENDPOINT }} || true
 
       - name: Run Fetch Script
+        shell: bash
         run: |
           cd /repo/x86_64
           
