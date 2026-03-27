@@ -14,7 +14,7 @@ jobs:
       - name: Install Dependencies
         run: |
           apk update
-          apk add bash curl jq openssl abuild aws-cli
+          apk add bash curl jq openssl abuild aws-cli git build-base meson ninja openssl-dev zlib-dev zstd-dev pkgconf
 
       - name: Setup Abuild Key
         run: |
@@ -23,6 +23,17 @@ jobs:
           # 必须生成对应公钥以便 abuild-sign 验证
           openssl rsa -in ~/.abuild/effectw.rsa -pubout -out ~/.abuild/effectw.pub
           chmod 600 ~/.abuild/effectw.rsa
+
+      - name: Build OpenWrt apk-tools v3
+        run: |
+          git clone https://git.openwrt.org/project/apk-tools.git
+          cd apk-tools
+          # 编译并安装到 /usr/bin/ 目录下，覆盖默认工具
+          meson setup build --prefix=/usr
+          ninja -C build
+          ninja -C build install
+          # 验证版本，输出应该包含 3.x.x 等字样
+          /usr/bin/apk --version
 
       - name: Configure AWS CLI for Cloudflare R2
         run: |
@@ -70,7 +81,7 @@ jobs:
           
           # 重新生成索引（此时 *.apk 包含了 R2 里的旧包和刚才下载的新包）
           echo "Generating new APKINDEX..."
-          apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
+          /usr/bin/apk index --allow-untrusted -o APKINDEX.tar.gz *.apk
           
           # 签名
           abuild-sign -k ~/.abuild/effectw.rsa APKINDEX.tar.gz
