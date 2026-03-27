@@ -1,0 +1,62 @@
+name: Update OpenWrt APK Repo
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # 每天凌晨2点自动运行
+  workflow_dispatch: # 允许手动点击触发
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+    container: alpine:latest # 直接使用 Alpine 镜像，原生支持 apk 工具链
+
+    steps:
+      - name: Install Dependencies
+        run: |
+          apk update
+          apk add bash curl jq openssl abuild aws-cli
+
+      - name: Setup Abuild Key
+        run: |
+          mkdir -p ~/.abuild
+          echo "${{ secrets.ABUILD_PRIVATE_KEY }}" > ~/.abuild/repo.rsa
+          # 必须生成对应公钥以便 abuild-sign 验证
+          openssl rsa -in ~/.abuild/repo.rsa -pubout -out ~/.abuild/repo.rsa.pub
+          chmod 600 ~/.abuild/repo.rsa
+
+      - name: Run Fetch Script
+        run: |
+          # 将上一套方案中的 Bash 脚本精简后放在这里
+          mkdir -p /repo/x86_64
+          cd /repo/x86_64
+          
+          # 定义目标列表
+          TARGETS=("jerrykuku/luci-theme-argon|luci-theme-argon-*.apk" "vernesong/OpenClash|luci-app-openclash-*.apk")
+          
+          for TARGET in "${TARGETS[@]}"; do
+              REPO_NAME="${TARGET%|*}"
+              KEYWORD="${TARGET#*|}"
+              REGEX_KEYWORD=$(echo "$KEYWORD" | sed 's/\*/.*/g')
+              
+              URLS=$(curl -s "https://api.github.com/repos/$REPO_NAME/releases/latest" | jq -r ".assets[] | select(.name | test(\"$REGEX_KEYWORD\")) | .browser_download_url")
+              
+              for URL in $URLS; do
+                  curl -L -O "$URL"
+              done
+          done
+          
+          # 生成并签名索引
+          apk index -o APKINDEX.tar.gz *.apk
+          abuild-sign -k ~/.abuild/repo.rsa APKINDEX.tar.gz
+
+      - name: Configure AWS CLI for Cloudflare R2
+        run: |
+          aws configure set aws_access_key_id ${{ secrets.R2_ACCESS_KEY_ID }}
+          aws configure set aws_secret_access_key ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          aws configure set default.region auto
+
+      - name: Sync to Cloudflare R2
+        run: |
+          # 使用 aws s3 sync 上传到 R2
+          aws s3 sync /repo/x86_64 s3://${{ secrets.R2_BUCKET }}/x86_64 \
+            --endpoint-url ${{ secrets.R2_ENDPOINT }}
